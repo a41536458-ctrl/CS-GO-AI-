@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>CS:GO HTML - Teams & 3D Models Restored</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; font-family: 'Arial Black', sans-serif; }
+        #radar { position: absolute; top: 20px; left: 20px; width: 150px; height: 150px; background: rgba(0, 30, 0, 0.7); border: 2px solid #0f0; border-radius: 50%; z-index: 10; overflow: hidden; }
+        #radar-player { position: absolute; top: 50%; left: 50%; width: 6px; height: 6px; background: #fff; border-radius: 50%; transform: translate(-50%, -50%); }
+        .radar-bot-red { position: absolute; width: 4px; height: 4px; background: red; border-radius: 50%; }
+        .radar-bot-blue { position: absolute; width: 4px; height: 4px; background: #00f; border-radius: 50%; }
+        #crosshair { position: absolute; top: 50%; left: 50%; width: 14px; height: 14px; border: 2px solid #0f0; border-radius: 50%; transform: translate(-50%, -50%); pointer-events: none; z-index: 5; }
+        #scope-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: 380px solid black; box-sizing: border-box; border-radius: 50%; display: none; pointer-events: none; z-index: 8; }
+        #ui { position: absolute; bottom: 30px; left: 30px; color: #fff; font-size: 20px; text-shadow: 2px 2px #000; z-index: 11; }
+        
+        .weapon-container {
+            position: absolute; bottom: -10px; right: 0;
+            width: 60vw; height: 65vh; 
+            pointer-events: none; z-index: 10;
+            display: flex; align-items: flex-end; justify-content: flex-end;
+            overflow: hidden;
+        }
+        .weapon-img { display: none; width: auto; object-fit: contain; filter: drop-shadow(5px 5px 15px rgba(0,0,0,0.8)); }
+
+        #weapon-ak { height: 110%; }    
+        #weapon-pistol { height: 80%; } 
+        #weapon-m4a1 { height: 78%; }   
+        #weapon-awp { height: 82%; }    
+
+        #damage-flash { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(255, 0, 0, 0.4); display: none; pointer-events: none; z-index: 15; }
+        #win-screen { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: gold; font-size: 50px; text-shadow: 4px 4px #000; display: none; z-index: 20; text-align: center; }
+    </style>
+</head>
+<body>
+
+    <div id="radar"><div id="radar-player"></div></div>
+    <div id="scope-overlay"></div>
+    <div id="damage-flash"></div>
+    <div id="win-screen"><span>MISSION COMPLETE</span><br><button onclick="location.reload()" style="padding:15px; font-size:24px; cursor:pointer; background:gold; border:none;">RESTART</button></div>
+    <div id="crosshair"></div>
+    
+    <div id="ui">
+        HP: <span id="hp">100</span> | <span style="color:red">ENEMIES: <span id="ecount">6</span></span> | <span style="color:blue">TEAM: <span id="tcount">6</span></span>
+    </div>
+    
+    <div id="weapon-box" class="weapon-container">
+        <img id="weapon-ak" src="ak47.png" class="weapon-img" style="display: block;">
+        <img id="weapon-pistol" src="pistol.png" class="weapon-img">
+        <img id="weapon-awp" src="awp.png" class="weapon-img">
+        <img id="weapon-m4a1" src="m4a1.png" class="weapon-img">
+    </div>
+
+    <script type="module">
+        import * as THREE from 'https://cdn.skypack.dev/three@0.136.0';
+        import { PointerLockControls } from 'https://cdn.skypack.dev/three@0.136.0/examples/jsm/controls/PointerLockControls.js';
+
+        let playerHP = 100, isGameOver = false, currentWeapon = 'ak';
+        let isMouseDown = false, isScoped = false, lastShotTime = 0;
+        const enemies = [], allies = [], collision_objects = [], keys = {};
+
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x87ceeb);
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 2000);
+        camera.position.set(-220, 5, -220);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+        scene.add(new THREE.HemisphereLight(0xffffff, 0x444422, 1.2));
+
+        const floor = new THREE.Mesh(new THREE.PlaneGeometry(600, 600), new THREE.MeshLambertMaterial({ color: 0xc2a673 }));
+        floor.rotation.x = -Math.PI/2; scene.add(floor);
+
+        function createWall(x, z, w, h, d) {
+            const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), new THREE.MeshLambertMaterial({ color: 0x8b7d6b }));
+            mesh.position.set(x, h/2, z); scene.add(mesh); collision_objects.push(mesh);
+        }
+        createWall(0, -300, 600, 40, 10); createWall(0, 300, 600, 40, 10);
+        createWall(-300, 0, 10, 40, 600); createWall(300, 0, 10, 40, 600);
+        createWall(0, 0, 40, 30, 200); createWall(0, 0, 200, 30, 40);
+
+        function spawnBot(x, z, team) {
+            const group = new THREE.Group();
+            const color = team === 'red' ? 0x333333 : 0x2244ff;
+            const mat = new THREE.MeshLambertMaterial({ color });
+            
+            // ТЕЛО
+            const body = new THREE.Mesh(new THREE.BoxGeometry(1.8, 3.5, 1), mat);
+            // ГОЛОВА
+            const head = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshLambertMaterial({ color: 0xffcccc }));
+            head.position.y = 2.3;
+            // НОГИ
+            const lLeg = new THREE.Mesh(new THREE.BoxGeometry(0.7, 2, 0.7), mat);
+            lLeg.position.set(0.4, -2.5, 0);
+            const rLeg = lLeg.clone(); rLeg.position.x = -0.4;
+            
+            group.add(body, head, lLeg, rLeg);
+            group.position.set(x, 4.5, z);
+            
+            const dot = document.createElement('div');
+            dot.className = team === 'red' ? 'radar-bot-red' : 'radar-bot-blue';
+            document.getElementById('radar').appendChild(dot);
+
+            group.userData = { 
+                hp: 100, team, lastShot: 0, spottedTime: 0, 
+                lLeg, rLeg, radarDot: dot, 
+                patrolTarget: new THREE.Vector3((Math.random()-0.5)*500, 4.5, (Math.random()-0.5)*500) 
+            };
+            scene.add(group); 
+            (team === 'red' ? enemies : allies).push(group);
+        }
+
+        // Спавн команд
+        for(let i=0; i<6; i++) spawnBot(150 + Math.random()*100, 150 + Math.random()*100, 'red');
+        for(let i=0; i<5; i++) spawnBot(-150 + Math.random()*50, -150 + Math.random()*50, 'blue');
+
+        const controls = new PointerLockControls(camera, document.body);
+        document.addEventListener('mousedown', (e) => {
+            if (!controls.isLocked) { controls.lock(); return; }
+            if (e.button === 0) { isMouseDown = true; if(currentWeapon !== 'ak' && currentWeapon !== 'm4a1') shoot(); }
+            if (e.button === 2 && currentWeapon === 'awp') toggleScope();
+        });
+        document.addEventListener('mouseup', () => isMouseDown = false);
+        
+        document.addEventListener('keydown', (e) => {
+            keys[e.code] = true;
+            if (e.key === '1') setW('ak'); if (e.key === '2') setW('pistol');
+            if (e.key === '3') setW('awp'); if (e.key === '4') setW('m4a1');
+        });
+        document.addEventListener('keyup', (e) => keys[e.code] = false);
+
+        function setW(id) {
+            currentWeapon = id;
+            document.querySelectorAll('.weapon-img').forEach(w => w.style.display = 'none');
+            document.getElementById('weapon-'+id).style.display = 'block';
+            if(isScoped) toggleScope();
+        }
+
+        function toggleScope() {
+            isScoped = !isScoped; camera.fov = isScoped ? 12 : 75; camera.updateProjectionMatrix();
+            document.getElementById('scope-overlay').style.display = isScoped ? 'block' : 'none';
+            document.getElementById('weapon-awp').style.display = isScoped ? 'none' : 'block';
+        }
+
+        function shoot() {
+            if (isGameOver) return;
+            const now = Date.now();
+            let delay = (currentWeapon === 'awp') ? 1600 : (currentWeapon === 'pistol' ? 400 : 100);
+            if (now - lastShotTime < delay) return;
+            lastShotTime = now;
+            
+            const wb = document.getElementById('weapon-box');
+            wb.style.transform = `translateY(15px)`; setTimeout(() => wb.style.transform='none', 50);
+
+            const ray = new THREE.Raycaster(); ray.setFromCamera(new THREE.Vector2(0,0), camera);
+            const hits = ray.intersectObjects(enemies, true);
+            if (hits.length > 0) {
+                let en = hits[0].object; while(en.parent && !(en instanceof THREE.Group)) en = en.parent;
+                en.userData.hp -= (currentWeapon === 'awp' ? 500 : 34);
+                if (en.userData.hp <= 0) removeBot(en, enemies, 'ecount');
+            }
+        }
+
+        function removeBot(bot, list, uiId) {
+            bot.userData.radarDot.remove();
+            scene.remove(bot);
+            list.splice(list.indexOf(bot), 1);
+            document.getElementById(uiId).innerText = list.length + (uiId === 'tcount' ? 1 : 0);
+            if (enemies.length === 0) { isGameOver = true; document.getElementById('win-screen').style.display = 'block'; controls.unlock(); }
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            if (controls.isLocked && !isGameOver) {
+                if (isMouseDown && (currentWeapon === 'ak' || currentWeapon === 'm4a1')) shoot();
+                const oldPos = camera.position.clone();
+                let spd = isScoped ? 0.08 : 0.45;
+                if (keys['KeyW']) controls.moveForward(spd); if (keys['KeyS']) controls.moveForward(-spd);
+                if (keys['KeyA']) controls.moveRight(-spd); if (keys['KeyD']) controls.moveRight(spd);
+                for(let o of collision_objects) if (new THREE.Box3().setFromObject(o).intersectsSphere(new THREE.Sphere(camera.position, 2))) camera.position.copy(oldPos);
+
+                const now = Date.now();
+                [...enemies, ...allies].forEach(bot => {
+                    const isEnemy = bot.userData.team === 'red';
+                    const relX = (bot.position.x - camera.position.x) * 0.25;
+                    const relZ = (bot.position.z - camera.position.z) * 0.25;
+                    bot.userData.radarDot.style.left = (75 + relX) + 'px';
+                    bot.userData.radarDot.style.top = (75 + relZ) + 'px';
+                    
+                    const dist = bot.position.distanceTo(camera.position);
+                    let clearShot = false;
+                    if (dist < 220) {
+                        const dir = new THREE.Vector3().subVectors(camera.position, bot.position).normalize();
+                        const ray = new THREE.Raycaster(bot.position.clone().add(new THREE.Vector3(0,2,0)), dir);
+                        const walls = ray.intersectObjects(collision_objects);
+                        if (walls.length === 0 || walls[0].distance > dist) clearShot = true;
+                    }
+
+                    if (clearShot && isEnemy) {
+                        bot.lookAt(camera.position.x, bot.position.y, camera.position.z);
+                        if (bot.userData.spottedTime === 0) bot.userData.spottedTime = now;
+                        if (now - bot.userData.spottedTime > 800) {
+                            if (now - bot.userData.lastShot > 2500) {
+                                bot.userData.lastShot = now; playerHP -= 10;
+                                document.getElementById('hp').innerText = playerHP;
+                                document.getElementById('damage-flash').style.display = 'block';
+                                setTimeout(() => document.getElementById('damage-flash').style.display = 'none', 80);
+                                if (playerHP <= 0) location.reload();
+                            }
+                        }
+                    } else {
+                        bot.userData.spottedTime = 0;
+                        const oldBotPos = bot.position.clone();
+                        bot.lookAt(bot.userData.patrolTarget);
+                        bot.translateZ(0.12);
+                        for(let o of collision_objects) if (new THREE.Box3().setFromObject(o).intersectsSphere(new THREE.Sphere(bot.position, 2))) {
+                            bot.position.copy(oldBotPos);
+                            bot.userData.patrolTarget.set((Math.random()-0.5)*500, 4.5, (Math.random()-0.5)*500);
+                        }
+                        // Анимация ног
+                        bot.userData.lLeg.rotation.x = Math.sin(now * 0.01) * 0.5;
+                        bot.userData.rLeg.rotation.x = -Math.sin(now * 0.01) * 0.5;
+                    }
+                });
+            }
+            renderer.render(scene, camera);
+        }
+        animate();
+    </script>
+</body>
+</html>
